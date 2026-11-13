@@ -14,6 +14,8 @@ import {
   Clock3,
   RotateCcw,
   Home,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import "../styles/game.css";
@@ -145,6 +147,7 @@ export default function Game() {
   const [combo, setCombo] = useState(0);
   const [timeLeft, setTimeLeft] = useState(config.duration);
   const [elapsed, setElapsed] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     bestScoreRef.current = bestScore;
@@ -225,6 +228,30 @@ export default function Game() {
   };
 
   const toggleSound = () => setSound((previous) => !previous);
+
+  const toggleFullscreen = async () => {
+    const page = document.querySelector(".game-page");
+    if (!page) return;
+
+    try {
+      if (!document.fullscreenElement) {
+        await page.requestFullscreen?.();
+      } else {
+        await document.exitFullscreen?.();
+      }
+    } catch (error) {
+      console.error("Fullscreen is not available:", error);
+    }
+  };
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
 
   // Bomb hit: stop gameplay immediately and start a short cinematic blast.
   const triggerBombExplosion = (game, fruit) => {
@@ -398,10 +425,17 @@ export default function Game() {
 
     const resizeCanvas = () => {
       const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      if (!rect.width || !rect.height) return;
 
-      canvas.width = Math.max(1, Math.round(rect.width * dpr));
-      canvas.height = Math.max(1, Math.round(rect.height * dpr));
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const pixelWidth = Math.max(1, Math.round(rect.width * dpr));
+      const pixelHeight = Math.max(1, Math.round(rect.height * dpr));
+
+      // Avoid resetting the drawing buffer unless its real size changed.
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -412,16 +446,26 @@ export default function Game() {
     };
 
     resizeCanvas();
+
+    // Observe the arena itself so tablet rotation, fullscreen and layout changes
+    // resize the gameplay surface even when the browser window size is unchanged.
+    const resizeObserver = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(resizeCanvas)
+      : null;
+
+    if (resizeObserver) {
+      resizeObserver.observe(canvas.parentElement || canvas);
+    }
+
     window.addEventListener("resize", resizeCanvas);
+    window.visualViewport?.addEventListener("resize", resizeCanvas);
 
     const spawnFruit = (game) => {
-      // Zen stays calm and consistent. Survival modes ramp over time.
-      const difficulty = mode === "zen"
-        ? 0
-        : Math.min(
-            1,
-            game.elapsed / (mode === "arcade" ? 75 : 100)
-          );
+      // Both survival modes ramp over time. Arcade reaches peak difficulty faster.
+      const difficulty = Math.min(
+        1,
+        game.elapsed / (mode === "arcade" ? 75 : 100)
+      );
 
       const bombChance = !config.bombs
         ? 0
@@ -437,22 +481,16 @@ export default function Game() {
         Math.max(radius + 16, game.width - radius - 15)
       );
 
-      const speedMultiplier = mode === "zen"
-        ? 0.82
-        : mode === "arcade"
-          ? 1.28 + difficulty * 0.85
-          : 1 + difficulty * 0.65;
+      const speedMultiplier = mode === "arcade"
+        ? 1.28 + difficulty * 0.85
+        : 1 + difficulty * 0.65;
 
       game.fruits.push({
         x,
         y: game.height + radius,
         vx: random(-1.3, 1.3) * speedMultiplier,
-        vy: mode === "zen"
-          ? random(-10.5, -9.5)
-          : mode === "arcade"
-            ? random(-9.5, -8.5) * speedMultiplier
-            : random(-12, -11),
-        gravity: mode === "zen" ? 0.16 : 0.19 + difficulty * 0.09,
+        vy: random(-9, -7) * speedMultiplier,
+        gravity: 0.19 + difficulty * 0.09,
         radius,
         rotation: random(-0.4, 0.4),
         rotationSpeed: random(-0.06, 0.06),
@@ -654,21 +692,17 @@ export default function Game() {
         );
       }
 
-      // Zen stays relaxed. Arcade ramps faster than Classic.
-      const difficulty = mode === "zen"
-        ? 0
-        : Math.min(
-            1,
-            game.elapsed / (mode === "arcade" ? 75 : 100)
-          );
+      // Arcade ramps faster and spawns more frequently than Classic.
+      const difficulty = Math.min(
+        1,
+        game.elapsed / (mode === "arcade" ? 75 : 100)
+      );
 
       game.spawnTimer += dt * 16.67;
 
-      const spawnInterval = mode === "zen"
-        ? 1050
-        : mode === "arcade"
-          ? Math.max(300, 900 - difficulty * 520)
-          : Math.max(430, 1250 - difficulty * 650);
+      const spawnInterval = mode === "arcade"
+        ? Math.max(300, 900 - difficulty * 520)
+        : Math.max(430, 1250 - difficulty * 650);
 
       if (game.spawnTimer >= spawnInterval) {
         let waveSize;
@@ -684,8 +718,7 @@ export default function Game() {
             ? 2
             : Math.floor(random(2, 4));
         } else {
-          // Zen sends relaxed pairs with no bombs or missed-fruit penalties.
-          waveSize = 2;
+          waveSize = 1;
         }
 
         for (let i = 0; i < waveSize; i++) {
@@ -838,7 +871,9 @@ export default function Game() {
     return () => {
       cancelAnimationFrame(animationFrame);
       pointerRef.current = { down: false, last: null };
+      resizeObserver?.disconnect();
       window.removeEventListener("resize", resizeCanvas);
+      window.visualViewport?.removeEventListener("resize", resizeCanvas);
     };
   }, [status, config, endGame]);
 
@@ -860,13 +895,24 @@ export default function Game() {
           SLICE <span>STORM</span>
         </div>
 
-        <button
-          className="game-sound"
-          onClick={toggleSound}
-          aria-label="Toggle sound"
-        >
-          {sound ? <Volume2 size={19} /> : <VolumeX size={19} />}
-        </button>
+        <div className="game-nav-actions">
+          <button
+            className="game-icon-button game-sound"
+            onClick={toggleSound}
+            aria-label={sound ? "Mute sound" : "Enable sound"}
+            title={sound ? "Mute sound" : "Enable sound"}
+          >
+            {sound ? <Volume2 size={18} /> : <VolumeX size={18} />}
+          </button>
+          <button
+            className="game-icon-button game-fullscreen"
+            onClick={toggleFullscreen}
+            aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          >
+            {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+          </button>
+        </div>
       </header>
 
       <section className="game-main">
@@ -898,9 +944,7 @@ export default function Game() {
           </div>
 
           <div className="hud-item lives-item">
-            <span>
-              <Heart size={14} /> {mode === "zen" ? "NO LIVES" : "LIVES"}
-            </span>
+            <span><Heart size={14} /> LIVES</span>
             <strong>
               {config.lives === 0
                 ? "∞"
@@ -963,9 +1007,9 @@ export default function Game() {
                 <h2>THE STORM<br />AWAITS.</h2>
                 <p>
                   {mode === "zen"
-                    ? "Relax, focus and slice without pressure."
+                    ? "A calm 90-second session. No bombs, no lives, just clean slices."
                     : mode === "arcade"
-                    ? "Endless survival. Slice fast, avoid bombs and protect your three lives."
+                    ? "An endless survival run. Slice fast, build combos and protect your lives."
                     : "Slice fruit. Avoid bombs. Protect your lives."}
                 </p>
                 <button className="arena-start-button" onClick={startGame}>
@@ -1022,7 +1066,7 @@ export default function Game() {
 
           <div className="arena-bottom" style={{ zIndex: 5 }}>
             <span>SLICE FRUIT</span>
-            <span>{mode === "zen" ? "NO BOMBS" : "AVOID BOMBS"}</span>
+            {config.bombs && <span>AVOID BOMBS</span>}
             <span>BUILD COMBOS</span>
           </div>
         </motion.div>
@@ -1032,8 +1076,8 @@ export default function Game() {
             <strong>HOW TO PLAY</strong>
             <p>
               {mode === "zen"
-                ? "Move your mouse or finger across the arena and enjoy a relaxed fruit-slicing session. No bombs or lives to worry about."
-                : "Move your mouse or finger across the arena to slice fruit. Avoid bombs. One bomb ends your run!"}
+                ? "Swipe across the arena to slice fruit. Relax and build your best combo."
+                : "Swipe with your mouse or finger to slice fruit. Avoid bombs. One hit ends your run."}
             </p>
           </div>
 
